@@ -42,10 +42,13 @@ class MarketMonitor:
     async def monitor_polymarket(self):
         """Monitor Polymarket activity"""
         logger.info(f"Starting Polymarket monitoring...")
-        while self.running:
+        while self.running and not self.bot.shutdown_requested:
             try:
                 markets = await self.poly_client.get_active_markets(limit=20)
                 for market in markets:
+                    # Check shutdown signal inside loop
+                    if self.bot.shutdown_requested: break
+                    
                     # Polymarket market IDs are usually condition_id for Data API
                     # The market dict from CLOB has 'condition_id'
                     condition_id = market.get('condition_id')
@@ -64,10 +67,12 @@ class MarketMonitor:
     async def monitor_kalshi(self):
         """Monitor Kalshi activity"""
         logger.info(f"Starting Kalshi monitoring...")
-        while self.running:
+        while self.running and not self.bot.shutdown_requested:
             try:
                 markets = await self.kalshi_client.get_active_markets(limit=20)
                 for market in markets:
+                    # Check shutdown signal inside loop
+                    if self.bot.shutdown_requested: break
                     # Kalshi uses 'ticker'
                     ticker = market.get('ticker')
                     if ticker:
@@ -87,8 +92,15 @@ class MarketMonitor:
         try:
             trades = await client.get_market_trades(market_id, limit=5)
             for trade in trades:
+                if self.bot.shutdown_requested: break
+
                 # Normalize trade data (very basic normalization)
                 trade_data = self._normalize_trade(source, trade)
+                
+                # Update bot with latest trade for /test command
+                trade_data['market_name'] = market_name
+                trade_data['source'] = source
+                self.bot.update_last_trade(trade_data)
                 
                 # Mock risk Scoring (since we rely on the stub)
                 # In real code, we'd pass normalized data to scorer
@@ -152,10 +164,15 @@ class MarketMonitor:
         await self.bot.send_status_notification("✅ AInsider Started (Polymarket + Kalshi)")
         
         # Run both monitors
-        await asyncio.gather(
-            self.monitor_polymarket(),
-            self.monitor_kalshi()
-        )
+        # We need to wrap them to handle graceful exit if shutdown requested
+        try:
+            await asyncio.gather(
+                self.monitor_polymarket(),
+                self.monitor_kalshi()
+            )
+        finally:
+            if self.bot.shutdown_requested:
+                await self.stop()
 
     async def stop(self):
         self.running = False

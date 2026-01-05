@@ -19,7 +19,7 @@ class KalshiClient:
         """
         try:
             # https://api.elections.kalshi.com/trade-api/v2/markets
-            params = {"limit": limit, "status": "active"}
+            params = {"limit": limit}
             resp = await self.client.get(f"{self.BASE_URL}/markets", params=params)
             resp.raise_for_status()
             data = resp.json()

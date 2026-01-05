@@ -71,6 +71,8 @@ class TelegramBotManager:
         # State tracking
         self.is_paused = False
         self.monitoring_active = True
+        self.shutdown_requested = False
+        self.last_trade = None  # For /test command
         self.stats = {
             "messages_sent": 0,
             "alerts_received": 0,
@@ -87,10 +89,10 @@ class TelegramBotManager:
         # Commands
         self.app.add_handler(CommandHandler("start", self._cmd_start))
         self.app.add_handler(CommandHandler("status", self._cmd_status))
-        self.app.add_handler(CommandHandler("pause", self._cmd_pause))
-        self.app.add_handler(CommandHandler("resume", self._cmd_resume))
+        self.app.add_handler(CommandHandler("stop", self._cmd_stop))
+        self.app.add_handler(CommandHandler("shutdown", self._cmd_shutdown))
+        self.app.add_handler(CommandHandler("test", self._cmd_test))
         self.app.add_handler(CommandHandler("stats", self._cmd_stats))
-        self.app.add_handler(CommandHandler("top", self._cmd_top_alerts))
         
         # Callback buttons
         self.app.add_handler(CallbackQueryHandler(self._callback_button))
@@ -104,12 +106,13 @@ class TelegramBotManager:
             "I monitor Polymarket for suspicious trading patterns and send you "
             "real-time alerts when anomalies are detected.\n\n"
             "<b>Available Commands:</b>\n"
+            "/test - Show latest checked trade\n"
             "/status - Current monitoring status\n"
-            "/pause - Pause alert delivery\n"
-            "/resume - Resume alert delivery\n"
+            "/stop - Pause alert delivery\n"
+            "/start - Resume alert delivery\n"
             "/stats - Show monitoring statistics\n"
-            "/top - Show top 3 recent alerts\n"
-            "/help - Show this message\n\n"
+            "/shutdown - Stop the bot completely\n\n"
+            "🔔 <i>You will receive alerts automatically. "
             "🔔 <i>You will receive alerts automatically. "
             "I respect Telegram rate limits (1 msg/sec)</i>"
         )
@@ -134,17 +137,45 @@ class TelegramBotManager:
         
         await update.message.reply_html(status_message)
     
-    async def _cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Pause alert delivery"""
         self.is_paused = True
-        await update.message.reply_text("⏸️ Alert delivery paused. Alerts are queued.")
+        await update.message.reply_text("⏸️ Alert delivery paused. Monitoring continues in background.")
         logger.info("Alert delivery paused by user")
     
+    async def _cmd_shutdown(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Shutdown the application"""
+        self.shutdown_requested = True
+        self.monitoring_active = False # Stop queue processor
+        await update.message.reply_text("🛑 Shutting down monitor...")
+        logger.info("Shutdown requested by user")
+        # The main loop in main.py should check bot.shutdown_requested
+    
+    async def _cmd_test(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show the latest checked trade"""
+        if not self.last_trade:
+             await update.message.reply_text("⚠️ No trades checked yet.")
+             return
+
+        trade = self.last_trade
+        # Format the last trade
+        msg = (
+            f"🧪 <b>Latest Scanned Trade</b>\n"
+            f"Market: {trade.get('market_name', 'Unknown')}\n"
+            f"Size: ${trade.get('size_usd', 0):,.2f}\n"
+            f"Source: {trade.get('source', 'Unknown')}\n"
+            f"ID: <code>{trade.get('id', 'Unknown')[:8]}...</code>"
+        )
+        await update.message.reply_html(msg)
+
     async def _cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Resume alert delivery"""
+        """Resume alert delivery (alias for start logic if paused)"""
         self.is_paused = False
         await update.message.reply_text("▶️ Alert delivery resumed.")
-        logger.info("Alert delivery resumed by user")
+
+    def update_last_trade(self, trade_info: Dict):
+        """Update the last checked trade for /test command"""
+        self.last_trade = trade_info
     
     async def _cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show monitoring statistics"""
@@ -337,27 +368,21 @@ class TelegramBotManager:
         """
         Start bot with async polling (non-blocking) [web:32]
         
-        Combines:
-        1. Telegram bot polling task
-        2. Alert queue processor task
-        
-        Both run concurrently without blocking
+        Uses manual initialization to avoid conflicts with existing asyncio loops.
         """
-        logger.info("Starting Telegram bot with async polling...")
+        logger.info("Starting Telegram bot...")
         
         # Start alert queue processor
         self.queue_processor_task = asyncio.create_task(self._process_alert_queue())
         
-        # Start polling (non-blocking in application context)
-        try:
-            await self.app.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                timeout=30,  # Long polling timeout [web:32]
-            )
-        except Exception as e:
-            logger.error(f"Bot polling error: {e}", exc_info=True)
-            self.monitoring_active = False
+        # Initialize and start application
+        await self.app.initialize()
+        await self.app.start()
+        await self.app.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        logger.info("Telegram bot polling started")
     
     async def stop(self):
         """Stop bot and cleanup"""
@@ -371,7 +396,13 @@ class TelegramBotManager:
             except asyncio.CancelledError:
                 pass
         
-        await self.app.stop()
+        # Stop polling and application
+        if self.app.updater.running:
+            await self.app.updater.stop()
+        if self.app.running:
+            await self.app.stop()
+        await self.app.shutdown()
+        
         logger.info("Telegram bot stopped")
     
     # ========== Utility Methods ==========

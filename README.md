@@ -30,6 +30,14 @@ A local Python application for monitoring prediction markets (Polymarket and Kal
    python -m src.main
    ```
 
+## Bot Commands
+- `/start` - Start monitoring
+- `/stop` - Pause monitoring
+- `/status` - Check system status
+- `/test` - Show latest scanned trade
+- `/stats` - Show detailed statistics
+- `/shutdown` - Stop the bot
+
 4. **Testing Alerts**
    ```bash
    python scripts/test_telegram_bot.py
