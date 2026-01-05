@@ -34,6 +34,10 @@ class MarketMonitor:
         self.db = Database()
         self.running = False
         self.poll_interval = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
+        # Rate Limit Safety:
+        # Polymarket: ~50-100 req/10s. We do ~20 sequential in a burst every 60s. Safe.
+        # Kalshi: ~1000 req/hour (conservative). 1 call every 60s = 60/hour. Very safe.
+        self.kalshi_poll_interval = max(self.poll_interval, 60) # Ensure at least 60s for Kalshi
     
     async def monitor_polymarket(self):
         """Monitor Polymarket activity"""
@@ -73,10 +77,10 @@ class MarketMonitor:
                             market_name=market.get('title', 'Unknown'),
                             client=self.kalshi_client
                         )
-                await asyncio.sleep(self.poll_interval)
+                await asyncio.sleep(self.kalshi_poll_interval)
             except Exception as e:
                 logger.error(f"Kalshi loop error: {e}")
-                await asyncio.sleep(self.poll_interval)
+                await asyncio.sleep(self.kalshi_poll_interval)
 
     async def _analyze_market(self, source, market_id, market_name, client):
         """Generic analysis for any market source"""
@@ -91,15 +95,32 @@ class MarketMonitor:
                 risk_score = self.scorer.calculate_risk(trade_data, {})
                 
                 if risk_score >= 70:
+                    # Construct Trading URL
+                    if source == "Polymarket":
+                        # Polymarket uses 'slug' from the market/event object. 
+                        # We only have market_name (question) here. 
+                        # To get a real link, we need the event slug. 
+                        # For now, we'll try to find a slug if available or link to the main page.
+                        # Ideally, we should pass more metadata to _analyze_market.
+                        url = f"https://polymarket.com/market/{market_name.replace(' ', '-').lower()}" # Fallback
+                        if 'slug' in trade_data.get('raw', {}):
+                             url = f"https://polymarket.com/event/{trade_data['raw']['slug']}"
+                        elif 'market_slug' in trade_data.get('raw', {}):
+                             url = f"https://polymarket.com/market/{trade_data['raw']['market_slug']}"
+                    
+                    elif source == "Kalshi":
+                        # Kalshi typically uses /markets/{ticker}
+                        url = f"https://kalshi.com/markets/{market_id}"
+
                     alert = TelegramAlert(
                         alert_id=f"{source}_{market_id}_{trade_data['id']}",
                         timestamp=datetime.now(),
                         risk_level="HIGH" if risk_score >= 85 else "MEDIUM",
                         risk_score=risk_score,
                         market_name=market_name,
-                        wallet_address=trade_data['user'], # Kalshi might not have wallet
+                        wallet_address=trade_data['user'],
                         trade_size_usd=trade_data['size_usd'],
-                        message=f"[{source}] Suspicious activity",
+                        message=f"[{source}] Suspicious activity\n🔗 <a href='{url}'>Trade on {source}</a>",
                         details_json=trade_data
                     )
                     await self.bot.queue_alert(alert)
