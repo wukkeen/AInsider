@@ -31,18 +31,35 @@ class KalshiClient:
 
     async def get_market_trades(self, ticker: str, limit: int = 20) -> List[Dict[str, Any]]:
         """
-        Fetch recent trades for a specific market ticker.
+        Fetch recent trades or orderbook for a specific market ticker.
+        User-specific trades are private, and public trade history seems restricted (404).
+        We will fetch the Orderbook to detect activity/pricing.
         """
         try:
-            # https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}/trades
-            params = {"limit": limit}
-            resp = await self.client.get(f"{self.BASE_URL}/markets/{ticker}/trades", params=params)
+            # Fallback to orderbook since /trades is often 404 public
+            # https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}/orderbook
+            resp = await self.client.get(f"{self.BASE_URL}/markets/{ticker}/orderbook")
             resp.raise_for_status()
             data = resp.json()
-            # Returns {'trades': [...]}
-            return data.get('trades', [])
+            
+            # Construct a "trade-like" object from the top of the book to maintain compatibility
+            # { 'orderbook': { 'yes': [[price, qty], ...], 'no': [...] } }
+            book = data.get('orderbook', {})
+            yes_ask = book.get('yes', [])
+            
+            # Synthesize a "latest quote" as a trade for monitoring
+            if yes_ask and len(yes_ask) > 0:
+                best_ask = yes_ask[0] # [price, count]
+                return [{
+                    "trade_id": "latest_quote",
+                    "price": best_ask[0],
+                    "count": best_ask[1],
+                    "created_time": "now",
+                    "is_quote": True
+                }]
+            return []
         except Exception as e:
-            logger.error(f"Error fetching Kalshi trades for {ticker}: {e}")
+            logger.error(f"Error fetching Kalshi orderbook for {ticker}: {e}")
             return []
             
     async def close(self):

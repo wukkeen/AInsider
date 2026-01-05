@@ -69,7 +69,6 @@ class TelegramBotManager:
         self.queue_processor_task = None
         
         # State tracking
-        self.is_paused = False
         self.monitoring_active = True
         self.shutdown_requested = False
         self.last_trade = None  # For /test command
@@ -89,7 +88,6 @@ class TelegramBotManager:
         # Commands
         self.app.add_handler(CommandHandler("start", self._cmd_start))
         self.app.add_handler(CommandHandler("status", self._cmd_status))
-        self.app.add_handler(CommandHandler("stop", self._cmd_stop))
         self.app.add_handler(CommandHandler("shutdown", self._cmd_shutdown))
         self.app.add_handler(CommandHandler("test", self._cmd_test))
         self.app.add_handler(CommandHandler("stats", self._cmd_stats))
@@ -108,8 +106,6 @@ class TelegramBotManager:
             "<b>Available Commands:</b>\n"
             "/test - Show latest checked trade\n"
             "/status - Current monitoring status\n"
-            "/stop - Pause alert delivery\n"
-            "/start - Resume alert delivery\n"
             "/stats - Show monitoring statistics\n"
             "/shutdown - Stop the bot completely\n\n"
             "🔔 <i>You will receive alerts automatically. "
@@ -122,26 +118,17 @@ class TelegramBotManager:
     
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show current monitoring status"""
-        status_emoji = "🟢" if self.monitoring_active else "🔴"
-        pause_emoji = "⏸️" if self.is_paused else "▶️"
-        queue_size = self.message_queue.qsize()
-        
+        uptime = self._format_uptime()
+        queue_size = self.alert_queue.qsize()
         status_message = (
-            f"{status_emoji} <b>Monitoring Status</b>\n\n"
-            f"Monitoring: {'Active' if self.monitoring_active else 'Inactive'}\n"
-            f"Alerts: {'Paused' if self.is_paused else 'Delivering'}\n"
-            f"Queue Size: {queue_size}/100\n"
-            f"Messages Sent: {self.stats['messages_sent']}\n"
-            f"Uptime: {self._format_uptime()}\n"
+            f"📊 <b>System Status</b>\n"
+            f"Run Time: {uptime}\n"
+            f"Queue Size: {queue_size}\n"
+            f"Alerts Sent: {self.stats['messages_sent']}"
         )
         
         await update.message.reply_html(status_message)
     
-    async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Pause alert delivery"""
-        self.is_paused = True
-        await update.message.reply_text("⏸️ Alert delivery paused. Monitoring continues in background.")
-        logger.info("Alert delivery paused by user")
     
     async def _cmd_shutdown(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Shutdown the application"""
@@ -168,10 +155,6 @@ class TelegramBotManager:
         )
         await update.message.reply_html(msg)
 
-    async def _cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Resume alert delivery (alias for start logic if paused)"""
-        self.is_paused = False
-        await update.message.reply_text("▶️ Alert delivery resumed.")
 
     def update_last_trade(self, trade_info: Dict):
         """Update the last checked trade for /test command"""
@@ -189,7 +172,7 @@ class TelegramBotManager:
             f"High-Risk Alerts: {self.stats['high_risk_alerts']}\n"
             f"Messages Sent: {self.stats['messages_sent']}\n"
             f"Alerts/Hour: {alerts_per_hour:.2f}\n"
-            f"Queue Size: {self.message_queue.qsize()}/100\n"
+            f"Queue Size: {self.alert_queue.qsize()}/100\n"
         )
         
         await update.message.reply_html(stats_message)
@@ -245,13 +228,13 @@ class TelegramBotManager:
         Respects queue size limit
         """
         try:
-            self.message_queue.put_nowait(alert)
+            self.alert_queue.put_nowait(alert)
             self.stats['alerts_received'] += 1
             
             if alert.risk_level == "HIGH":
                 self.stats['high_risk_alerts'] += 1
             
-            logger.debug(f"Alert queued: {alert.alert_id} (Queue size: {self.message_queue.qsize()})")
+            logger.debug(f"Alert queued: {alert.alert_id} (Queue size: {self.alert_queue.qsize()})")
             return True
             
         except asyncio.QueueFull:
@@ -268,14 +251,10 @@ class TelegramBotManager:
         
         while self.monitoring_active:
             try:
-                if self.is_paused:
-                    await asyncio.sleep(1)
-                    continue
-                
                 # Wait for alert (with timeout to check monitoring_active)
                 try:
                     alert = await asyncio.wait_for(
-                        self.message_queue.get(),
+                        self.alert_queue.get(),
                         timeout=5.0
                     )
                 except asyncio.TimeoutError:
@@ -293,7 +272,7 @@ class TelegramBotManager:
                 self.last_message_time = datetime.now()
                 self.stats['messages_sent'] += 1
                 
-                self.message_queue.task_done()
+                self.alert_queue.task_done()
                 
             except Exception as e:
                 logger.error(f"Error processing alert queue: {e}", exc_info=True)

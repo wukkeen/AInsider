@@ -31,12 +31,10 @@ A local Python application for monitoring prediction markets (Polymarket and Kal
    ```
 
 ## Bot Commands
-- `/start` - Start monitoring
-- `/stop` - Pause monitoring
-- `/status` - Check system status
-- `/test` - Show latest scanned trade
-- `/stats` - Show detailed statistics
-- `/shutdown` - Stop the bot
+- `/test` - Show latest scanned trade & system health.
+- `/status` - Check queue size and uptime.
+- `/stats` - Show detailed internal statistics.
+- `/shutdown` - Stop the bot.
 
 4. **Testing Alerts**
    ```bash
