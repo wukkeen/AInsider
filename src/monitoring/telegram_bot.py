@@ -66,6 +66,7 @@ class TelegramBotManager:
         self.last_message_time = datetime.now()
         self.min_interval = 1.0  # 1 second between messages to same chat
         self.message_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        self.alert_queue = self.message_queue # Alias for compatibility if needed, or just use alert_queue
         self.queue_processor_task = None
         
         # State tracking
